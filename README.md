@@ -26,7 +26,7 @@ To convert your existing dataset into our supported format, please refer to the 
 
 ### Demo Dataset
 
-We provide small-scale demo datasets for quick testing and validation. You can download them from [hugging face](https:huggingface.co).
+We provide small-scale demo datasets for quick testing and validation. You can download them from [hugging face](https://huggingface.co/datasets/Ziyeeee/Policy-Lightning/tree/main/demo).
 
 ## 🏋️ Training
 
