@@ -17,3 +17,4 @@ robomimic
 scipy
 termcolor
 tqdm
+hydra-core
