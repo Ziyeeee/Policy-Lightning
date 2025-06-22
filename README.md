@@ -9,7 +9,7 @@ conda create -n policy-lt python=3.12
 conda activate policy-lt
 
 # Replace 'cu***' with your CUDA version, e.g., cu124
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu***
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu***
 
 # Install project dependencies
 pip install -r requirements.txt

@@ -11,10 +11,10 @@ omegaconf
 pandas
 pygame
 pymunk
-pytorch3d
 pytorch_lightning
 robomimic
 scipy
 termcolor
 tqdm
+wandb
 hydra-core
