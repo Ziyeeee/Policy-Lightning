@@ -82,7 +82,9 @@ class Dataset3D(Dataset):
                 'action': actions,
                 'agent_pos': actions,
             }
-        data['pointcloud'] = self.data['pointcloud'][:]
+        for key in self.input_meta["obs"].keys():
+            if key.startswith("pointcloud"):
+                data[key] = self.data[key][:]
         normalizer = LinearNormalizer()
         normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
     

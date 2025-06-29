@@ -104,6 +104,9 @@ def main(dataset_path: str, output_path: str, load_num: int, agent_num: int, poi
             obs = data["obs"]
             action = data["action"]
             if data is not None:
+                point_cnt = obs["xyzw"].shape[1] // (agent_num + 1)
+                xyzw_list = []
+                rgb_list = []
                 for agent_id in range(agent_num):
                     if (len(action[f'panda-{agent_id}']) != len(obs['rgb'])):
                         print("action length not equal to obs length")
@@ -130,14 +133,41 @@ def main(dataset_path: str, output_path: str, load_num: int, agent_num: int, poi
                         f[f"action_{agent_id}"].resize((f[f"action_{agent_id}"].shape[0] + agent_action.shape[0]), axis=0)
                         f[f"action_{agent_id}"][-agent_action.shape[0]:] = agent_action
 
+                    xyzw = obs["xyzw"][:min_len, agent_id * point_cnt:(agent_id + 1) * point_cnt]
+                    rgb = obs["rgb"][:min_len, agent_id * point_cnt:(agent_id + 1) * point_cnt]
+                    xyzw_list.append(xyzw)
+                    rgb_list.append(rgb)
+                    points = []
+                    for j in range(len(xyzw)):
+                        mask = xyzw[j, :, -1] == 1
+                        _xyz = xyzw[j, mask, :3]
+                        _rgb = rgb[j, mask]
+                        kdline_fps_samples_idx = fpsample.bucket_fps_kdline_sampling(_xyz, point_num, h=9)
+                        point = np.concatenate([_xyz[kdline_fps_samples_idx], _rgb[kdline_fps_samples_idx]], axis=-1)
+                        points.append(point)
+                    points = np.array(points).astype(np.float32)
+                    if i == 0:
+                        f.create_dataset(
+                            f"pointcloud_{agent_id}",
+                            data=points,
+                            shape=points.shape,
+                            maxshape=(None, *points.shape[1:]),
+                            dtype="float32",
+                            **comp_kwaegs
+                        )
+                    else:
+                        f[f"pointcloud_{agent_id}"].resize((f[f"pointcloud_{agent_id}"].shape[0] + points.shape[0]), axis=0)
+                        f[f"pointcloud_{agent_id}"][-points.shape[0]:] = points
+
+                xyzw = np.concatenate(xyzw_list, axis=1)
+                rgb = np.concatenate(rgb_list, axis=1)
                 pointclouds = []
-                for j in range(min_len):
-                    mask = obs["xyzw"][j, :, -1] == 1
-                    mask[-256*256:] = False
-                    xyz = obs["xyzw"][j, mask, :3]
-                    rgb = obs["rgb"][j, mask]
-                    kdline_fps_samples_idx = fpsample.bucket_fps_kdline_sampling(xyz, point_num, h=9)
-                    pointcloud = np.concatenate([xyz[kdline_fps_samples_idx], rgb[kdline_fps_samples_idx]], axis=-1)
+                for j in range(len(xyzw)):
+                    mask = xyzw[j, :, -1] == 1
+                    _xyz = xyzw[j, mask, :3]
+                    _rgb = rgb[j, mask]
+                    kdline_fps_samples_idx = fpsample.bucket_fps_kdline_sampling(_xyz, point_num, h=9)
+                    pointcloud = np.concatenate([_xyz[kdline_fps_samples_idx], _rgb[kdline_fps_samples_idx]], axis=-1)
                     pointclouds.append(pointcloud)
                 pointclouds = np.array(pointclouds).astype(np.float32)
                 if i == 0:

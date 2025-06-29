@@ -1,32 +1,33 @@
 from typing import Dict
-import hydra
 from omegaconf import DictConfig
 from copy import deepcopy
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 from einops import rearrange, reduce
-from lightning.pytorch import LightningModule
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
+from termcolor import cprint
+import copy
+import time
+from lightning.pytorch import LightningModule
 
 from model.common.normalizer import LinearNormalizer
-from model.diffusion.conditional_unet1d import ConditionalUnet1D
+from model.diffusion.conditional_unet1d_3d import ConditionalUnet1D
 from model.diffusion.mask_generator import LowdimMaskGenerator
-from model.vision.multi_image_obs_encoder import MultiImageObsEncoder
 from common.pytorch_util import dict_apply
+from model.vision.pointnet_extractor import DP3Encoder
 from model.common.lr_scheduler import get_scheduler
 
 
-class DP2(LightningModule):
+class DP3(LightningModule):
     def __init__(self, 
             shape_meta: dict,
             noise_scheduler: DDPMScheduler,
-            obs_encoder: MultiImageObsEncoder,
             optimazer_cfg: DictConfig,
             scheduler_cfg: DictConfig,
             agent_num: int,
-            share_obs_encoder: bool,
             horizon, 
             n_action_steps, 
             n_obs_steps,
@@ -36,28 +37,62 @@ class DP2(LightningModule):
             down_dims=(256,512,1024),
             kernel_size=5,
             n_groups=8,
-            cond_predict_scale=True,
+            condition_type="film",
+            use_down_condition=True,
+            use_mid_condition=True,
+            use_up_condition=True,
+            encoder_output_dim=256,
+            crop_shape=None,
+            use_pc_color=False,
+            pointnet_type="pointnet",
+            pointcloud_encoder_cfg=None,
             # parameters passed to step
             **kwargs):
         super().__init__()
 
+        self.condition_type = condition_type
         self.optimizer_cfg = optimazer_cfg
         self.scheduler_cfg = scheduler_cfg
 
-        # parse shapes
+        # parse shape_meta
         action_shape = shape_meta['action']['shape']
-        assert len(action_shape) == 1
-        action_dim = action_shape[0]
-        # get feature dim
-        obs_feature_dim = obs_encoder.output_shape()[0]
+        self.action_shape = action_shape
+        if len(action_shape) == 1:
+            action_dim = action_shape[0]
+        elif len(action_shape) == 2: # use multiple hands
+            action_dim = action_shape[0] * action_shape[1]
+        else:
+            raise NotImplementedError(f"Unsupported action shape {action_shape}")
+            
+        obs_shape_meta = shape_meta['obs']
+        obs_dict = dict_apply(obs_shape_meta, lambda x: x['shape'])
+
+
+        obs_encoder = DP3Encoder(observation_space=obs_dict,
+                                img_crop_shape=crop_shape,
+                                out_channel=encoder_output_dim,
+                                pointcloud_encoder_cfg=pointcloud_encoder_cfg,
+                                use_pc_color=use_pc_color,
+                                pointnet_type=pointnet_type,
+                                )
 
         # create diffusion model
+        obs_feature_dim = obs_encoder.output_shape()
         input_dim = action_dim + obs_feature_dim
         global_cond_dim = None
         if obs_as_global_cond:
             input_dim = action_dim
-            global_cond_dim = obs_feature_dim * n_obs_steps
-            
+            if "cross_attention" in self.condition_type:
+                global_cond_dim = obs_feature_dim
+            else:
+                global_cond_dim = obs_feature_dim * n_obs_steps
+        
+
+        self.use_pc_color = use_pc_color
+        self.pointnet_type = pointnet_type
+        cprint(f"[DiffusionUnetHybridPointcloudPolicy] use_pc_color: {self.use_pc_color}", "yellow")
+        cprint(f"[DiffusionUnetHybridPointcloudPolicy] pointnet_type: {self.pointnet_type}", "yellow")
+
         # model = ConditionalUnet1D(
         #     input_dim=input_dim,
         #     local_cond_dim=None,
@@ -66,29 +101,34 @@ class DP2(LightningModule):
         #     down_dims=down_dims,
         #     kernel_size=kernel_size,
         #     n_groups=n_groups,
-        #     cond_predict_scale=cond_predict_scale
+        #     condition_type=condition_type,
+        #     use_down_condition=use_down_condition,
+        #     use_mid_condition=use_mid_condition,
+        #     use_up_condition=use_up_condition,
         # )
-        # self.model = model
-        self.model_list = nn.ModuleList([
-            ConditionalUnet1D(
-                input_dim=action_dim,
-                local_cond_dim=None,
-                global_cond_dim=global_cond_dim,
-                diffusion_step_embed_dim=diffusion_step_embed_dim,
-                down_dims=down_dims,
-                kernel_size=kernel_size,
-                n_groups=n_groups,
-                cond_predict_scale=cond_predict_scale
-            )
-            for _ in range(agent_num)
-        ])
 
-        self.obs_encoders = nn.ModuleList([
-            deepcopy(obs_encoder) for _ in range(agent_num)
-        ]) if not share_obs_encoder else obs_encoder
-        # self.obs_encoder = obs_encoder
-        
+        self.obs_encoders = nn.ModuleList(
+            [deepcopy(obs_encoder) for _ in range(agent_num)]
+        )
+        self.model_list = nn.ModuleList(
+            [ConditionalUnet1D(
+            input_dim=input_dim,
+            local_cond_dim=None,
+            global_cond_dim=global_cond_dim,
+            diffusion_step_embed_dim=diffusion_step_embed_dim,
+            down_dims=down_dims,
+            kernel_size=kernel_size,
+            n_groups=n_groups,
+            condition_type=condition_type,
+            use_down_condition=use_down_condition,
+            use_mid_condition=use_mid_condition,
+            use_up_condition=use_up_condition,
+        ) for _ in range(agent_num)]
+        )
         self.noise_scheduler = noise_scheduler
+        
+        
+        self.noise_scheduler_pc = copy.deepcopy(noise_scheduler)
         self.mask_generator = LowdimMaskGenerator(
             action_dim=action_dim,
             obs_dim=0 if obs_as_global_cond else obs_feature_dim,
@@ -96,9 +136,9 @@ class DP2(LightningModule):
             fix_obs_steps=True,
             action_visible=False
         )
-
-        self.normalizer = LinearNormalizer()
         
+        self.normalizer = LinearNormalizer()
+
         self.agent_num = agent_num
         self.horizon = horizon
         self.obs_feature_dim = obs_feature_dim
@@ -119,7 +159,7 @@ class DP2(LightningModule):
     @property
     def dtype(self):
         return next(iter(self.parameters())).dtype
-    
+        
     # ========= inference  ============
     def conditional_sample(self, 
             condition_data, condition_mask, agent_id,
@@ -134,32 +174,31 @@ class DP2(LightningModule):
         trajectory = torch.randn(
             size=condition_data.shape, 
             dtype=condition_data.dtype,
-            device=condition_data.device,
-            generator=generator)
-    
+            device=condition_data.device)
+
         # set step values
         scheduler.set_timesteps(self.num_inference_steps)
+
 
         for t in scheduler.timesteps:
             # 1. apply conditioning
             trajectory[condition_mask] = condition_data[condition_mask]
 
-            # 2. predict model output
-            model_output = model(trajectory, t, 
-                local_cond=local_cond, global_cond=global_cond)
 
+            model_output = model(sample=trajectory,
+                                timestep=t, 
+                                local_cond=local_cond, global_cond=global_cond)
+            
             # 3. compute previous image: x_t -> x_t-1
             trajectory = scheduler.step(
-                model_output, t, trajectory, 
-                generator=generator,
-                **kwargs
-                ).prev_sample
-        
+                model_output, t, trajectory, ).prev_sample
+            
+                
         # finally make sure conditioning is enforced
-        trajectory[condition_mask] = condition_data[condition_mask]        
+        trajectory[condition_mask] = condition_data[condition_mask]   
 
         return trajectory
-
+    
     def get_local_agent_from_batch(self, batch, agent_id):
         return {
             k.rsplit('_', 1)[0]: v
@@ -172,14 +211,17 @@ class DP2(LightningModule):
         obs_dict: must include "obs" key
         result: must include "action" key
         """
-        assert 'past_action' not in obs_dict
         result = {}
-        nobs = self.normalizer(obs_dict)
+        # normalize input
+        nobs = self.normalizer.normalize(obs_dict)
+        # this_n_point_cloud = nobs['imagin_robot'][..., :3] # only use coordinate
+        # if not self.use_pc_color:
+        #     nobs['pointcloud'] = nobs['pointcloud'][..., :3]
+        
         for agent_id in range(self.agent_num):
-            # 1. get agent obs
             agent_nobs = self.get_local_agent_from_batch(nobs, agent_id)
-            obs_encoder = self.obs_encoders[agent_id] if isinstance(self.obs_encoders, nn.ModuleList) else self.obs_encoders
-
+            obs_encoder = self.obs_encoders[agent_id]
+        
             value = next(iter(agent_nobs.values()))
             B, To = value.shape[:2]
             T = self.horizon
@@ -187,114 +229,171 @@ class DP2(LightningModule):
             Do = self.obs_feature_dim
             To = self.n_obs_steps
 
-            device = value.device
-            dtype = value.dtype
+            # build input
+            device = self.device
+            dtype = self.dtype
 
+            # handle different ways of passing observation
             local_cond = None
             global_cond = None
-
             if self.obs_as_global_cond:
+                # condition through global feature
                 this_nobs = dict_apply(agent_nobs, lambda x: x[:,:To,...].reshape(-1,*x.shape[2:]))
                 nobs_features = obs_encoder(this_nobs)
-                global_cond = nobs_features.reshape(B, -1)
+                if "cross_attention" in self.condition_type:
+                    # treat as a sequence
+                    global_cond = nobs_features.reshape(B, self.n_obs_steps, -1)
+                else:
+                    # reshape back to B, Do
+                    global_cond = nobs_features.reshape(B, -1)
+                # empty data for action
                 cond_data = torch.zeros(size=(B, T, Da), device=device, dtype=dtype)
                 cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
             else:
+                # condition through impainting
                 this_nobs = dict_apply(agent_nobs, lambda x: x[:,:To,...].reshape(-1,*x.shape[2:]))
                 nobs_features = obs_encoder(this_nobs)
+                # reshape back to B, T, Do
                 nobs_features = nobs_features.reshape(B, To, -1)
                 cond_data = torch.zeros(size=(B, T, Da+Do), device=device, dtype=dtype)
                 cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
                 cond_data[:,:To,Da:] = nobs_features
                 cond_mask[:,:To,Da:] = True
 
-            # 2. Run sampling for this agent
+            # run sampling
             nsample = self.conditional_sample(
                 cond_data, 
                 cond_mask,
                 agent_id,
                 local_cond=local_cond,
                 global_cond=global_cond,
-                **self.kwargs
-            )
-
+                **self.kwargs)
+            
+            # unnormalize prediction
             naction_pred = nsample[...,:Da]
             action_pred = self.normalizer[f'action_{agent_id}'].unnormalize(naction_pred)
 
+            # get action
             start = To - 1
             end = start + self.n_action_steps
-            action = action_pred[:, start:end]
-
+            action = action_pred[:,start:end]
+            
+            # get prediction
             result[f'action_{agent_id}'] = action
-            result[f'action_pred_{agent_id}'] = action_pred  # optional
-
+            result[f'action_pred_{agent_id}'] = action_pred
+        
         return result
 
     # ========= training  ============
     def set_normalizer(self, normalizer: LinearNormalizer):
         self.normalizer.load_state_dict(normalizer.state_dict())
 
-    def compute_loss(self, batch, **kwargs):
-        assert 'valid_mask' not in batch
+    def compute_loss(self, batch):
         total_loss = 0.0
-
-        nobs = self.normalizer(batch['obs'])
+        # normalize input
+        nobs = self.normalizer.normalize(batch['obs'])
 
         for agent_id in range(self.agent_num):
-            # ===================== 1. 取出模型、编码器、归一器 =====================
             model = self.model_list[agent_id]
-            obs_encoder = self.obs_encoders[agent_id] if isinstance(self.obs_encoders, nn.ModuleList) else self.obs_encoders
-            
-            # ===================== 2. 取出该 agent 的动作和归一化 =====================
+            obs_encoder = self.obs_encoders[agent_id]
+
             agent_nobs = self.get_local_agent_from_batch(nobs, agent_id)
             agent_action = batch[f'action_{agent_id}']
             nactions = self.normalizer[f'action_{agent_id}'].normalize(agent_action)
             batch_size = nactions.shape[0]
             horizon = nactions.shape[1]
 
-            # ===================== 3. 编码 obs（作为 global_cond 或 concat） =====================
+            # handle different ways of passing observation
             local_cond = None
             global_cond = None
             trajectory = nactions
             cond_data = trajectory
-
+        
             if self.obs_as_global_cond:
-                this_nobs = dict_apply(agent_nobs, lambda x: x[:, :self.n_obs_steps,...].reshape(-1, *x.shape[2:]))
+                # reshape B, T, ... to B*T
+                this_nobs = dict_apply(agent_nobs, lambda x: x[:,:self.n_obs_steps,...].reshape(-1,*x.shape[2:]))
                 nobs_features = obs_encoder(this_nobs)
-                global_cond = nobs_features.reshape(batch_size, -1)
+
+                if "cross_attention" in self.condition_type:
+                    # treat as a sequence
+                    global_cond = nobs_features.reshape(batch_size, self.n_obs_steps, -1)
+                else:
+                    # reshape back to B, Do
+                    global_cond = nobs_features.reshape(batch_size, -1)
+                # this_n_point_cloud = this_nobs['imagin_robot'].reshape(batch_size,-1, *this_nobs['imagin_robot'].shape[1:])
+                this_n_point_cloud = this_nobs['pointcloud'].reshape(batch_size,-1, *this_nobs['pointcloud'].shape[1:])
+                this_n_point_cloud = this_n_point_cloud[..., :3]
             else:
+                # reshape B, T, ... to B*T
                 this_nobs = dict_apply(agent_nobs, lambda x: x.reshape(-1, *x.shape[2:]))
                 nobs_features = obs_encoder(this_nobs)
+                # reshape back to B, T, Do
                 nobs_features = nobs_features.reshape(batch_size, horizon, -1)
                 cond_data = torch.cat([nactions, nobs_features], dim=-1)
                 trajectory = cond_data.detach()
 
-            # ===================== 4. Mask、加噪、前向传播 =====================
+
+            # generate impainting mask
             condition_mask = self.mask_generator(trajectory)
+
+            # Sample noise that we'll add to the images
             noise = torch.randn(trajectory.shape, device=trajectory.device)
+
+            
             bsz = trajectory.shape[0]
+            # Sample a random timestep for each image
             timesteps = torch.randint(
-                0, self.noise_scheduler.config.num_train_timesteps,
+                0, self.noise_scheduler.config.num_train_timesteps, 
                 (bsz,), device=trajectory.device
             ).long()
-            noisy_trajectory = self.noise_scheduler.add_noise(trajectory, noise, timesteps)
+
+            # Add noise to the clean images according to the noise magnitude at each timestep
+            # (this is the forward diffusion process)
+            noisy_trajectory = self.noise_scheduler.add_noise(
+                trajectory, noise, timesteps)
+            
+            # compute loss mask
             loss_mask = ~condition_mask
+
+            # apply conditioning
             noisy_trajectory[condition_mask] = cond_data[condition_mask]
 
-            pred = model(noisy_trajectory, timesteps, local_cond=local_cond, global_cond=global_cond)
+            # Predict the noise residual
+            
+            pred = model(sample=noisy_trajectory, 
+                        timestep=timesteps, 
+                        local_cond=local_cond, 
+                        global_cond=global_cond)
 
-            # ===================== 5. loss =====================
-            pred_type = self.noise_scheduler.config.prediction_type
-            target = noise if pred_type == 'epsilon' else trajectory
+
+            pred_type = self.noise_scheduler.config.prediction_type 
+            if pred_type == 'epsilon':
+                target = noise
+            elif pred_type == 'sample':
+                target = trajectory
+            elif pred_type == 'v_prediction':
+                # https://github.com/huggingface/diffusers/blob/main/src/diffusers/schedulers/scheduling_dpmsolver_multistep.py
+                # https://github.com/huggingface/diffusers/blob/v0.11.1-patch/src/diffusers/schedulers/scheduling_dpmsolver_multistep.py
+                # sigma = self.noise_scheduler.sigmas[timesteps]
+                # alpha_t, sigma_t = self.noise_scheduler._sigma_to_alpha_sigma_t(sigma)
+                self.noise_scheduler.alpha_t = self.noise_scheduler.alpha_t.to(self.device)
+                self.noise_scheduler.sigma_t = self.noise_scheduler.sigma_t.to(self.device)
+                alpha_t, sigma_t = self.noise_scheduler.alpha_t[timesteps], self.noise_scheduler.sigma_t[timesteps]
+                alpha_t = alpha_t.unsqueeze(-1).unsqueeze(-1)
+                sigma_t = sigma_t.unsqueeze(-1).unsqueeze(-1)
+                v_t = alpha_t * noise - sigma_t * trajectory
+                target = v_t
+            else:
+                raise ValueError(f"Unsupported prediction type {pred_type}")
+
             loss = F.mse_loss(pred, target, reduction='none')
             loss = loss * loss_mask.type(loss.dtype)
-            loss = reduce(loss, 'b ... -> b (...)', 'mean').mean()
+            loss = reduce(loss, 'b ... -> b (...)', 'mean')
+            loss = loss.mean()
 
             total_loss += loss
-
-        # ===================== 6. 平均所有 agent 的 loss =====================
-        final_loss = total_loss / self.agent_num
-        return final_loss   
+        
+        return total_loss / self.agent_num
 
     def training_step(self, batch, batch_idx):
         loss = self.compute_loss(batch)
@@ -306,7 +405,6 @@ class DP2(LightningModule):
         self.log('val/loss', loss, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
         
         obs_dict = batch['obs']
-        
         total_mse = 0.0
         result = self.predict_action(obs_dict)
         for key, value in result.items():
