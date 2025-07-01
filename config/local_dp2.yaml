@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - task: default_task
+  - task: 3a_three_cubes_sort_local
 
 name: ${task.name}
 task_name: ${task.name}

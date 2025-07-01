@@ -18,3 +18,4 @@ termcolor
 tqdm
 wandb
 hydra-core
+packaging

@@ -4,7 +4,7 @@ import h5py
 import numpy as np
 from torch.utils.data import Dataset
 import argparse
-
+import os
 from mani_skill.utils.io_utils import load_json
 from mani_skill.utils import common
 
@@ -98,6 +98,7 @@ def main(dataset_path: str, output_path: str, load_num: int, agent_num: int) -> 
     comp_kwaegs = {'compression': 'gzip', 'compression_opts': 4}
     episode_ends = []
     end = 0
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with h5py.File(output_path, "w") as f:
         for i, data in tqdm(enumerate(dataset), desc="Loading data", total=len(dataset)):
             obs = data["obs"]
@@ -105,48 +106,72 @@ def main(dataset_path: str, output_path: str, load_num: int, agent_num: int) -> 
             if data is not None:
                 for agent_id in range(agent_num):
                     camera_name = "head_camera_agent" + str(agent_id)
-                    if (len(action[f'panda-{agent_id}']) != len(obs[camera_name]["rgb"])):
-                        print("action length not equal to obs length")
-                        print("action length", len(action[f'panda-{agent_id}']))
-                        print("obs length", len(obs["sensor_data"][camera_name]["rgb"]))
-                    min_len = min(len(action[f'panda-{agent_id}']), len(obs[camera_name]["rgb"]))
+                    if camera_name in obs:
+                        if (len(action[f'panda-{agent_id}']) != len(obs[camera_name]["rgb"])):
+                            print("action length not equal to obs length")
+                            print("action length", len(action[f'panda-{agent_id}']))
+                            print("obs length", len(obs[camera_name]["rgb"]))
+                        min_len = min(len(action[f'panda-{agent_id}']), len(obs[camera_name]["rgb"]))
 
-                    if agent_id == 0:
-                        end += min_len
-                        episode_ends.append(end)
+                        if agent_id == 0:
+                            end += min_len
+                            episode_ends.append(end)
 
-                    if i == 0:
-                        head_cam = obs[camera_name]["rgb"][:min_len]
-                        head_cam = np.array(head_cam).astype(np.uint8)
-                        head_cam = np.moveaxis(head_cam, -1, -3)
-                        f.create_dataset(
-                            f"head_cam_{agent_id}",
-                            data=head_cam,
-                            shape=head_cam.shape,
-                            maxshape=(None, *head_cam.shape[1:]),
-                            dtype="uint8",
-                            **comp_kwaegs
-                        )
-                        agent_action = action[f'panda-{agent_id}'][:min_len]
-                        agent_action = np.array(agent_action).astype(np.float32)
-                        f.create_dataset(
-                            f"action_{agent_id}",
-                            data=agent_action,
-                            shape=agent_action.shape,
-                            maxshape=(None, *agent_action.shape[1:]),
-                            dtype="float32",
-                            **comp_kwaegs
-                        )
+                        if i == 0:
+                            head_cam = obs[camera_name]["rgb"][:min_len]
+                            head_cam = np.array(head_cam).astype(np.uint8)
+                            head_cam = np.moveaxis(head_cam, -1, -3)
+                            f.create_dataset(
+                                f"head_cam_{agent_id}",
+                                data=head_cam,
+                                shape=head_cam.shape,
+                                maxshape=(None, *head_cam.shape[1:]),
+                                dtype="uint8",
+                                **comp_kwaegs
+                            )
+                            agent_action = action[f'panda-{agent_id}'][:min_len]
+                            agent_action = np.array(agent_action).astype(np.float32)
+                            f.create_dataset(
+                                f"action_{agent_id}",
+                                data=agent_action,
+                                shape=agent_action.shape,
+                                maxshape=(None, *agent_action.shape[1:]),
+                                dtype="float32",
+                                **comp_kwaegs
+                            )
+                        else:
+                            head_cam = obs[camera_name]["rgb"][:min_len]
+                            head_cam = np.array(head_cam).astype(np.uint8)
+                            head_cam = np.moveaxis(head_cam, -1, -3)
+                            f[f"head_cam_{agent_id}"].resize((f[f"head_cam_{agent_id}"].shape[0] + head_cam.shape[0]), axis=0)
+                            f[f"head_cam_{agent_id}"][-head_cam.shape[0]:] = head_cam
+                            agent_action = action[f'panda-{agent_id}'][:min_len]
+                            agent_action = np.array(agent_action).astype(np.float32)
+                            f[f"action_{agent_id}"].resize((f[f"action_{agent_id}"].shape[0] + agent_action.shape[0]), axis=0)
+                            f[f"action_{agent_id}"][-agent_action.shape[0]:] = agent_action
                     else:
-                        head_cam = obs[camera_name]["rgb"][:min_len]
-                        head_cam = np.array(head_cam).astype(np.uint8)
-                        head_cam = np.moveaxis(head_cam, -1, -3)
-                        f[f"head_cam_{agent_id}"].resize((f[f"head_cam_{agent_id}"].shape[0] + head_cam.shape[0]), axis=0)
-                        f[f"head_cam_{agent_id}"][-head_cam.shape[0]:] = head_cam
-                        agent_action = action[f'panda-{agent_id}'][:min_len]
-                        agent_action = np.array(agent_action).astype(np.float32)
-                        f[f"action_{agent_id}"].resize((f[f"action_{agent_id}"].shape[0] + agent_action.shape[0]), axis=0)
-                        f[f"action_{agent_id}"][-agent_action.shape[0]:] = agent_action
+                        min_len = len(action[f'panda-{agent_id}'])
+
+                        if agent_id == 0:
+                            end += min_len
+                            episode_ends.append(end)
+
+                        if i == 0:
+                            agent_action = action[f'panda-{agent_id}'][:min_len]
+                            agent_action = np.array(agent_action).astype(np.float32)
+                            f.create_dataset(
+                                f"action_{agent_id}",
+                                data=agent_action,
+                                shape=agent_action.shape,
+                                maxshape=(None, *agent_action.shape[1:]),
+                                dtype="float32",
+                                **comp_kwaegs
+                            )
+                        else:
+                            agent_action = action[f'panda-{agent_id}'][:min_len]
+                            agent_action = np.array(agent_action).astype(np.float32)
+                            f[f"action_{agent_id}"].resize((f[f"action_{agent_id}"].shape[0] + agent_action.shape[0]), axis=0)
+                            f[f"action_{agent_id}"][-agent_action.shape[0]:] = agent_action
         f.create_dataset(
             "episode_ends",
             data=np.array(episode_ends),
