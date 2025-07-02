@@ -17,7 +17,7 @@ import traceback
 import yaml
 from datetime import datetime
 import dill
-from policy_lightning.env_runner.dp_runner import DPRunner
+from policy_lightning.env_runner.dp_runner_local import DPRunner
 from planner.motionplanner import PandaArmMotionPlanningSolver
 
 import gymnasium as gym
@@ -132,7 +132,9 @@ def get_model_input(observation, agent_pos, agent_num):
         camera_name = 'head_camera' + '_agent' + str(agent_id)
         head_cam = np.moveaxis(observation['sensor_data'][camera_name]['rgb'].squeeze(0).cpu().numpy(), -1, 0) / 255   
         head_cam_dict.update({f'head_cam_{agent_id}': head_cam})
-    head_cam_dict.update({f'agent_pos': agent_pos})
+        agent_pos_i = agent_pos[agent_id * 8 : (agent_id + 1) * 8]
+        head_cam_dict[f'agent_pos_{agent_id}'] = agent_pos_i
+    # head_cam_dict.update({f'agent_pos': agent_pos})
     return head_cam_dict
 
 
@@ -174,7 +176,7 @@ def main(args: Args):
     
     os.makedirs('logs', exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    log_file = f"logs/dp_local_{env_id}_{args.data_num}_{args.checkpoint_num}_{timestamp}.txt"
+    log_file = f"logs/dp_global_{env_id}_{args.data_num}_{args.checkpoint_num}_{timestamp}.txt"
 
     # Load multi dp policy when load multi model
     # dp_models = []
