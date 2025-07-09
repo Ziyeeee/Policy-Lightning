@@ -1,18 +1,14 @@
 from typing import Dict
 from omegaconf import DictConfig
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import AdamW
 from einops import rearrange, reduce
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from termcolor import cprint
 import copy
-import time
-from lightning.pytorch import LightningModule
 
-from model.common.normalizer import LinearNormalizer
+from policy.base_policy import BasePolicy
 from model.diffusion.conditional_unet1d_3d import ConditionalUnet1D
 from model.diffusion.mask_generator import LowdimMaskGenerator
 from common.pytorch_util import dict_apply
@@ -20,7 +16,7 @@ from model.vision.pointnet_extractor import DP3Encoder
 from model.common.lr_scheduler import get_scheduler
 
 
-class DP3(LightningModule):
+class DP3(BasePolicy):
     def __init__(self, 
             shape_meta: dict,
             noise_scheduler: DDPMScheduler,
@@ -46,11 +42,9 @@ class DP3(LightningModule):
             pointcloud_encoder_cfg=None,
             # parameters passed to step
             **kwargs):
-        super().__init__()
+        super().__init__(optimazer_cfg, scheduler_cfg)
 
         self.condition_type = condition_type
-        self.optimizer_cfg = optimazer_cfg
-        self.scheduler_cfg = scheduler_cfg
 
         # parse shape_meta
         action_shape = shape_meta['action']['shape']
@@ -91,8 +85,6 @@ class DP3(LightningModule):
         cprint(f"[DiffusionUnetHybridPointcloudPolicy] use_pc_color: {self.use_pc_color}", "yellow")
         cprint(f"[DiffusionUnetHybridPointcloudPolicy] pointnet_type: {self.pointnet_type}", "yellow")
 
-
-
         model = ConditionalUnet1D(
             input_dim=input_dim,
             local_cond_dim=None,
@@ -121,7 +113,6 @@ class DP3(LightningModule):
             action_visible=False
         )
         
-        self.normalizer = LinearNormalizer()
         self.horizon = horizon
         self.obs_feature_dim = obs_feature_dim
         self.action_dim = action_dim
@@ -133,14 +124,6 @@ class DP3(LightningModule):
         if num_inference_steps is None:
             num_inference_steps = noise_scheduler.config.num_train_timesteps
         self.num_inference_steps = num_inference_steps
-
-    @property
-    def device(self):
-        return next(iter(self.parameters())).device
-    
-    @property
-    def dtype(self):
-        return next(iter(self.parameters())).dtype
         
     # ========= inference  ============
     def conditional_sample(self, 
@@ -180,7 +163,6 @@ class DP3(LightningModule):
                 
         # finally make sure conditioning is enforced
         trajectory[condition_mask] = condition_data[condition_mask]   
-
 
         return trajectory
 
@@ -262,10 +244,6 @@ class DP3(LightningModule):
         }
         
         return result
-
-    # ========= training  ============
-    def set_normalizer(self, normalizer: LinearNormalizer):
-        self.normalizer.load_state_dict(normalizer.state_dict())
 
     def compute_loss(self, batch):
         # normalize input
@@ -368,47 +346,5 @@ class DP3(LightningModule):
         loss = reduce(loss, 'b ... -> b (...)', 'mean')
         loss = loss.mean()
         
-
-        loss_dict = {
-                'bc_loss': loss.item(),
-            }
-        
-        return loss
-
-    def training_step(self, batch, batch_idx):
-        loss = self.compute_loss(batch)
-        self.log('train/loss', loss, prog_bar=True, on_step=True, on_epoch=False, sync_dist=True)
         return loss
     
-    def validation_step(self, batch, batch_idx):
-        loss = self.compute_loss(batch)
-        self.log('val/loss', loss, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
-        
-        obs_dict = batch['obs']
-        gt_action = batch['action']
-        
-        result = self.predict_action(obs_dict)
-        pred_action = result['action_pred']
-        mse = F.mse_loss(pred_action, gt_action)
-        self.log('val/pred_action_mse', mse, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
-        return loss
-
-    def configure_optimizers(self):
-        optimizer = AdamW(
-            **self.optimizer_cfg, 
-            params=self.parameters()
-        )
-        lr_scheduler = get_scheduler(
-            self.scheduler_cfg.scheduler,
-            optimizer=optimizer,
-            num_warmup_steps=self.scheduler_cfg.warmup_steps,
-            num_training_steps=self.trainer.estimated_stepping_batches,
-        )
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": lr_scheduler,
-                "interval": "step",
-                "frequency": 1,
-            },
-        }

@@ -3,19 +3,17 @@ from omegaconf import DictConfig
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import AdamW
 from einops import rearrange, reduce
-from lightning.pytorch import LightningModule
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
-from model.common.normalizer import LinearNormalizer
+from policy.base_policy import BasePolicy
 from model.diffusion.conditional_unet1d import ConditionalUnet1D
 from model.diffusion.mask_generator import LowdimMaskGenerator
 from model.vision.multi_image_obs_encoder import MultiImageObsEncoder
 from common.pytorch_util import dict_apply
-from model.common.lr_scheduler import get_scheduler
 
-class DP2(LightningModule):
+
+class DP2(BasePolicy):
     def __init__(self, 
             shape_meta: dict,
             noise_scheduler: DDPMScheduler,
@@ -34,10 +32,7 @@ class DP2(LightningModule):
             cond_predict_scale=True,
             # parameters passed to step
             **kwargs):
-        super().__init__()
-
-        self.optimizer_cfg = optimazer_cfg
-        self.scheduler_cfg = scheduler_cfg
+        super().__init__(optimazer_cfg, scheduler_cfg)
 
         # parse shapes
         action_shape = shape_meta['action']['shape']
@@ -74,7 +69,6 @@ class DP2(LightningModule):
             fix_obs_steps=True,
             action_visible=False
         )
-        self.normalizer = LinearNormalizer()
         self.horizon = horizon
         self.obs_feature_dim = obs_feature_dim
         self.action_dim = action_dim
@@ -86,14 +80,6 @@ class DP2(LightningModule):
         if num_inference_steps is None:
             num_inference_steps = noise_scheduler.config.num_train_timesteps
         self.num_inference_steps = num_inference_steps
-
-    @property
-    def device(self):
-        return next(iter(self.parameters())).device
-    
-    @property
-    def dtype(self):
-        return next(iter(self.parameters())).dtype
     
     # ========= inference  ============
     def conditional_sample(self, 
@@ -135,7 +121,7 @@ class DP2(LightningModule):
 
         return trajectory
 
-
+    # over write predict_action
     def predict_action(self, obs_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """
         obs_dict: must include "obs" key
@@ -201,10 +187,7 @@ class DP2(LightningModule):
         }
         return result
 
-    # ========= training  ============
-    def set_normalizer(self, normalizer: LinearNormalizer):
-        self.normalizer.load_state_dict(normalizer.state_dict())
-
+    # over write compute_loss
     def compute_loss(self, batch, **kwargs):
         # import pdb; pdb.set_trace()
         # normalize input
@@ -277,40 +260,3 @@ class DP2(LightningModule):
             return loss, pred
         return loss
     
-    def training_step(self, batch, batch_idx):
-        loss = self.compute_loss(batch)
-        self.log('train/loss', loss, prog_bar=True, on_step=True, on_epoch=False, sync_dist=True)
-        return loss
-    
-    def validation_step(self, batch, batch_idx):
-        loss = self.compute_loss(batch)
-        self.log('val/loss', loss, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
-        
-        obs_dict = batch['obs']
-        gt_action = batch['action']
-        
-        result = self.predict_action(obs_dict)
-        pred_action = result['action_pred']
-        mse = F.mse_loss(pred_action, gt_action)
-        self.log('val/pred_action_mse', mse, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
-        return loss
-
-    def configure_optimizers(self):
-        optimizer = AdamW(
-            **self.optimizer_cfg, 
-            params=self.parameters()
-        )
-        lr_scheduler = get_scheduler(
-            self.scheduler_cfg.scheduler,
-            optimizer=optimizer,
-            num_warmup_steps=self.scheduler_cfg.warmup_steps,
-            num_training_steps=self.trainer.estimated_stepping_batches,
-        )
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": lr_scheduler,
-                "interval": "step",
-                "frequency": 1,
-            },
-        }

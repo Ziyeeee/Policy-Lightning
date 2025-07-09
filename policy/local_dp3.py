@@ -13,7 +13,7 @@ import copy
 import time
 from lightning.pytorch import LightningModule
 
-from model.common.normalizer import LinearNormalizer
+from policy.base_policy import BasePolicy
 from model.diffusion.conditional_unet1d_3d import ConditionalUnet1D
 from model.diffusion.mask_generator import LowdimMaskGenerator
 from common.pytorch_util import dict_apply
@@ -21,7 +21,7 @@ from model.vision.pointnet_extractor import DP3Encoder
 from model.common.lr_scheduler import get_scheduler
 
 
-class DP3(LightningModule):
+class DP3(BasePolicy):
     def __init__(self, 
             shape_meta: dict,
             noise_scheduler: DDPMScheduler,
@@ -48,11 +48,9 @@ class DP3(LightningModule):
             pointcloud_encoder_cfg=None,
             # parameters passed to step
             **kwargs):
-        super().__init__()
+        super().__init__(optimazer_cfg, scheduler_cfg)
 
         self.condition_type = condition_type
-        self.optimizer_cfg = optimazer_cfg
-        self.scheduler_cfg = scheduler_cfg
 
         # parse shape_meta
         action_shape = shape_meta['action']['shape']
@@ -127,7 +125,6 @@ class DP3(LightningModule):
         )
         self.noise_scheduler = noise_scheduler
         
-        
         self.noise_scheduler_pc = copy.deepcopy(noise_scheduler)
         self.mask_generator = LowdimMaskGenerator(
             action_dim=action_dim,
@@ -136,8 +133,6 @@ class DP3(LightningModule):
             fix_obs_steps=True,
             action_visible=False
         )
-        
-        self.normalizer = LinearNormalizer()
 
         self.agent_num = agent_num
         self.horizon = horizon
@@ -151,14 +146,6 @@ class DP3(LightningModule):
         if num_inference_steps is None:
             num_inference_steps = noise_scheduler.config.num_train_timesteps
         self.num_inference_steps = num_inference_steps
-
-    @property
-    def device(self):
-        return next(iter(self.parameters())).device
-    
-    @property
-    def dtype(self):
-        return next(iter(self.parameters())).dtype
         
     # ========= inference  ============
     def conditional_sample(self, 
@@ -284,10 +271,6 @@ class DP3(LightningModule):
         
         return result
 
-    # ========= training  ============
-    def set_normalizer(self, normalizer: LinearNormalizer):
-        self.normalizer.load_state_dict(normalizer.state_dict())
-
     def compute_loss(self, batch):
         total_loss = 0.0
         # normalize input
@@ -394,11 +377,6 @@ class DP3(LightningModule):
             total_loss += loss
         
         return total_loss / self.agent_num
-
-    def training_step(self, batch, batch_idx):
-        loss = self.compute_loss(batch)
-        self.log('train/loss', loss, prog_bar=True, on_step=True, on_epoch=False, sync_dist=True)
-        return loss
     
     def validation_step(self, batch, batch_idx):
         loss = self.compute_loss(batch)
@@ -416,23 +394,3 @@ class DP3(LightningModule):
         total_mse = total_mse / self.agent_num
         self.log('val/pred_action_mse', total_mse, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
         return loss
-
-    def configure_optimizers(self):
-        optimizer = AdamW(
-            **self.optimizer_cfg, 
-            params=self.parameters()
-        )
-        lr_scheduler = get_scheduler(
-            self.scheduler_cfg.scheduler,
-            optimizer=optimizer,
-            num_warmup_steps=self.scheduler_cfg.warmup_steps,
-            num_training_steps=self.trainer.estimated_stepping_batches,
-        )
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": lr_scheduler,
-                "interval": "step",
-                "frequency": 1,
-            },
-        }

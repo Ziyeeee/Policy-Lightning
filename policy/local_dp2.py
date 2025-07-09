@@ -1,24 +1,20 @@
 from typing import Dict
-import hydra
 from omegaconf import DictConfig
 from copy import deepcopy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import AdamW
 from einops import rearrange, reduce
-from lightning.pytorch import LightningModule
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
-from model.common.normalizer import LinearNormalizer
+from policy.base_policy import BasePolicy
 from model.diffusion.conditional_unet1d import ConditionalUnet1D
 from model.diffusion.mask_generator import LowdimMaskGenerator
 from model.vision.multi_image_obs_encoder import MultiImageObsEncoder
 from common.pytorch_util import dict_apply
-from model.common.lr_scheduler import get_scheduler
 
 
-class DP2(LightningModule):
+class DP2(BasePolicy):
     def __init__(self, 
             shape_meta: dict,
             noise_scheduler: DDPMScheduler,
@@ -39,10 +35,7 @@ class DP2(LightningModule):
             cond_predict_scale=True,
             # parameters passed to step
             **kwargs):
-        super().__init__()
-
-        self.optimizer_cfg = optimazer_cfg
-        self.scheduler_cfg = scheduler_cfg
+        super().__init__(optimazer_cfg, scheduler_cfg)
 
         # parse shapes
         action_shape = shape_meta['action']['shape']
@@ -96,8 +89,6 @@ class DP2(LightningModule):
             fix_obs_steps=True,
             action_visible=False
         )
-
-        self.normalizer = LinearNormalizer()
         
         self.agent_num = agent_num
         self.horizon = horizon
@@ -111,14 +102,6 @@ class DP2(LightningModule):
         if num_inference_steps is None:
             num_inference_steps = noise_scheduler.config.num_train_timesteps
         self.num_inference_steps = num_inference_steps
-
-    @property
-    def device(self):
-        return next(iter(self.parameters())).device
-    
-    @property
-    def dtype(self):
-        return next(iter(self.parameters())).dtype
     
     # ========= inference  ============
     def conditional_sample(self, 
@@ -230,10 +213,6 @@ class DP2(LightningModule):
 
         return result
 
-    # ========= training  ============
-    def set_normalizer(self, normalizer: LinearNormalizer):
-        self.normalizer.load_state_dict(normalizer.state_dict())
-
     def compute_loss(self, batch, **kwargs):
         assert 'valid_mask' not in batch
         total_loss = 0.0
@@ -241,18 +220,15 @@ class DP2(LightningModule):
         nobs = self.normalizer(batch['obs'])
 
         for agent_id in range(self.agent_num):
-            # ===================== 1. 取出模型、编码器、归一器 =====================
             model = self.model_list[agent_id]
             obs_encoder = self.obs_encoders[agent_id] if isinstance(self.obs_encoders, nn.ModuleList) else self.obs_encoders
             
-            # ===================== 2. 取出该 agent 的动作和归一化 =====================
             agent_nobs = self.get_local_agent_from_batch(nobs, agent_id)
             agent_action = batch[f'action_{agent_id}']
             nactions = self.normalizer[f'action_{agent_id}'].normalize(agent_action)
             batch_size = nactions.shape[0]
             horizon = nactions.shape[1]
 
-            # ===================== 3. 编码 obs（作为 global_cond 或 concat） =====================
             local_cond = None
             global_cond = None
             trajectory = nactions
@@ -269,7 +245,6 @@ class DP2(LightningModule):
                 cond_data = torch.cat([nactions, nobs_features], dim=-1)
                 trajectory = cond_data.detach()
 
-            # ===================== 4. Mask、加噪、前向传播 =====================
             condition_mask = self.mask_generator(trajectory)
             noise = torch.randn(trajectory.shape, device=trajectory.device)
             bsz = trajectory.shape[0]
@@ -283,7 +258,6 @@ class DP2(LightningModule):
 
             pred = model(noisy_trajectory, timesteps, local_cond=local_cond, global_cond=global_cond)
 
-            # ===================== 5. loss =====================
             pred_type = self.noise_scheduler.config.prediction_type
             target = noise if pred_type == 'epsilon' else trajectory
             loss = F.mse_loss(pred, target, reduction='none')
@@ -292,14 +266,8 @@ class DP2(LightningModule):
 
             total_loss += loss
 
-        # ===================== 6. 平均所有 agent 的 loss =====================
         final_loss = total_loss / self.agent_num
         return final_loss   
-
-    def training_step(self, batch, batch_idx):
-        loss = self.compute_loss(batch)
-        self.log('train/loss', loss, prog_bar=True, on_step=True, on_epoch=False, sync_dist=True)
-        return loss
     
     def validation_step(self, batch, batch_idx):
         loss = self.compute_loss(batch)
@@ -318,23 +286,3 @@ class DP2(LightningModule):
         total_mse = total_mse / self.agent_num
         self.log('val/pred_action_mse', total_mse, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
         return loss
-
-    def configure_optimizers(self):
-        optimizer = AdamW(
-            **self.optimizer_cfg, 
-            params=self.parameters()
-        )
-        lr_scheduler = get_scheduler(
-            self.scheduler_cfg.scheduler,
-            optimizer=optimizer,
-            num_warmup_steps=self.scheduler_cfg.warmup_steps,
-            num_training_steps=self.trainer.estimated_stepping_batches,
-        )
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": lr_scheduler,
-                "interval": "step",
-                "frequency": 1,
-            },
-        }
