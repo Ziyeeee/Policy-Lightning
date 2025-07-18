@@ -1,3 +1,4 @@
+import os
 from typing import Union
 from tqdm import tqdm
 import h5py
@@ -94,7 +95,7 @@ class ManiSkillTrajectoryDataset(Dataset):
 
 def main(dataset_path: str, output_path: str, load_num: int, agent_num: int) -> None:
     dataset = ManiSkillTrajectoryDataset(dataset_file=dataset_path, load_count=load_num)
-
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     comp_kwaegs = {'compression': 'gzip', 'compression_opts': 4}
     episode_ends = []
     end = 0

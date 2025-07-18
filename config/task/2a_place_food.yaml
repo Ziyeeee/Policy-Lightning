@@ -1,0 +1,38 @@
+name: 2a_place_food
+agent_num: 2
+
+image_shape: &image_shape [3, 240, 320]
+action_shape: &action_shape [16]
+
+shape_meta: &shape_meta
+  # acceptable types: rgb, low_dim
+  obs:
+    head_cam_0:
+      shape: *image_shape
+      type: rgb
+    head_cam_1:
+      shape: *image_shape
+      type: rgb
+    agent_pos:
+      shape: *action_shape
+      type: low_dim
+  action:
+    shape: *action_shape
+
+dataset:
+  _target_: dataset.dataset2d.Dataset2D
+  dataset_path: data/place_food.h5
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  input_meta: 
+    obs:
+      head_cam_0: *image_shape
+      head_cam_1: *image_shape
+      agent_pos_0: *action_shape
+      agent_pos_1: *action_shape
+    action_0: *action_shape
+    action_1: *action_shape
+  seperate_action: False
+  use_mem: True
+  
