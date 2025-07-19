@@ -26,9 +26,8 @@ class DeployPolicy:
         payload = torch.load(open(ckpt_path, 'rb'), pickle_module=dill)
         self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
         cfg = payload['cfg']
-        print(cfg)
 
-        # self.policy = policy
+        # Deploy policy
         cfg = OmegaConf.create(cfg)
         model: LightningModule = hydra.utils.instantiate(cfg.policy)
         model.load_state_dict(payload['state_dict'])
@@ -55,19 +54,23 @@ class DeployPolicy:
         return head_cam_dict
 
     def update_obs(self, obs: Dict[str, Any]):
-        initial_qpos_list = []
+        qpos_list = []
         agent_num = len(obs['agent'])
+        # In panda arm, we use past action's gripper state as the current state
+        # so we need to record the action history
         for id in range(agent_num):
             current_qpos = obs['agent'][f'panda-{id}']['qpos'].squeeze(0)[:-2].cpu().numpy()
             if len(self.action) == 0:
-                # 如果action队列为空,则使用qpos最后一位为1
+                # Initialize with open if no action history
                 current_qpos = np.append(current_qpos, 1)
             else:
-                current_action = self.action.pop()
-                current_qpos = np.append(current_qpos, current_action[id * 8 : (id + 1) * 8])
-            initial_qpos_list.append(current_qpos)
-        initial_qpos_all = np.concatenate(initial_qpos_list)  # shape: [n*8]
-        obs = self.get_model_input(obs, initial_qpos_all, agent_num)
+                current_action = self.action[0]         # get the first action in the history as robot's current state
+                current_qpos = np.append(current_qpos, current_action[(id + 1) * 8 - 1])  # last action is gripper action
+            qpos_list.append(current_qpos)
+        qpos_all = np.concatenate(qpos_list)  # shape: [n*8]
+        if len(self.action) != 0:
+            self.action.popleft()  # pop the first action to keep the length of action history consistent
+        obs = self.get_model_input(obs, qpos_all, agent_num)
         self.obs.append(obs)
 
     def get_action(self) -> Any:
@@ -89,17 +92,12 @@ class DeployPolicy:
 
         # device_transfer
         np_action_dict = dict_apply(action_dict, lambda x: x.detach().to('cpu').numpy())
-        action_pred_list = []
-        for key in np_action_dict.keys():
-            if key.startswith('action_pred'):
-                action_pred_list.append(np_action_dict[key])
-        if action_pred_list:
-            merged_action_pred = np.concatenate(action_pred_list, axis=-1)  # 或 axis=1, 视你的数据shape而定
-            action = merged_action_pred.squeeze(0)
-        else:
-            action = np_action_dict['action'].squeeze(0)
-        
-        return action
+        actions = np_action_dict['action'].squeeze(0)
+
+        # record action as robot's state
+        for action in actions:
+            self.action.append(action)
+        return actions
 
     def reset(self):
         """
