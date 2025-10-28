@@ -1,7 +1,7 @@
 name: 2a_lift_barrier
 agent_num: 2
 
-image_shape: &image_shape [3, 256, 256]
+image_shape: &image_shape [3, 240, 320]
 action_shape: &action_shape [8]
 
 shape_meta: &shape_meta
@@ -10,7 +10,7 @@ shape_meta: &shape_meta
     head_cam:
       shape: *image_shape
       type: rgb
-    agent_pos:
+    state:
       shape: *action_shape
       type: low_dim
   action:
@@ -26,8 +26,8 @@ dataset:
     obs:
       head_cam_0: *image_shape
       head_cam_1: *image_shape
-      agent_pos_0: *action_shape
-      agent_pos_1: *action_shape
+      state_0: *action_shape
+      state_1: *action_shape
     action_0: *action_shape
     action_1: *action_shape
   seperate_action: True

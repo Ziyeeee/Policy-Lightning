@@ -73,12 +73,12 @@ class Dataset2D(Dataset):
             data = {}
             for key, value in self.get_all_actions().items():
                 data[key] = value
-                data[key.replace("action", "agent_pos")] = value
+                data[key.replace("action", "state")] = value
         else:
             actions = self.get_all_actions()['action']
             data = {
                 'action': actions,
-                'agent_pos': actions
+                'state': actions
             }
         normalizer = LinearNormalizer()
         normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
@@ -97,8 +97,9 @@ class Dataset2D(Dataset):
             if key.startswith("head_cam"):
                 obs = self.data[key][buffer_start_idx:buffer_end_idx]
                 obs = np.array(obs).astype(np.float32) / 255.0
-            elif key.startswith("agent_pos"):
-                obs = self.data[key.replace("agent_pos", "action")][buffer_start_idx:buffer_end_idx]
+                obs = np.moveaxis(obs, -1, -3)
+            elif key.startswith("state"):
+                obs = self.data[key.replace("state", "action")][buffer_start_idx:buffer_end_idx]
                 obs = np.array(obs).astype(np.float32)
             else:
                 obs = self.data[key][buffer_start_idx:buffer_end_idx]
@@ -117,16 +118,16 @@ class Dataset2D(Dataset):
 
         if not self.separate_action:
             agent_num = len(action_keys)
-            agent_pos_list = []
+            state_list = []
             action_list = []
             for i in range(agent_num):
-                key = f"agent_pos_{i}"
-                agent_pos_list.append(res['obs'][key])
+                key = f"state_{i}"
+                state_list.append(res['obs'][key])
                 del res['obs'][key]
                 key = f"action_{i}"
                 action_list.append(res[key])
                 del res[key]
-            res['obs']['agent_pos'] = np.concatenate(agent_pos_list, axis=-1)
+            res['obs']['state'] = np.concatenate(state_list, axis=-1)
             res['action'] = np.concatenate(action_list, axis=-1)
 
         return res
@@ -143,8 +144,8 @@ if __name__ == "__main__":
                             "obs": {
                                 "head_cam_0": [3, 256, 256],
                                 "head_cam_1": [3, 256, 256],
-                                "agent_pos_0": [8],
-                                "agent_pos_1": [8],
+                                "state_0": [8],
+                                "state_1": [8],
                             },
                             "action_0": [8],
                             "action_1": [8],

@@ -119,7 +119,6 @@ def main(dataset_path: str, output_path: str, load_num: int, agent_num: int) -> 
                     if i == 0:
                         head_cam = obs[camera_name]["rgb"][:min_len]
                         head_cam = np.array(head_cam).astype(np.uint8)
-                        head_cam = np.moveaxis(head_cam, -1, -3)
                         f.create_dataset(
                             f"head_cam_{agent_id}",
                             data=head_cam,
@@ -141,7 +140,6 @@ def main(dataset_path: str, output_path: str, load_num: int, agent_num: int) -> 
                     else:
                         head_cam = obs[camera_name]["rgb"][:min_len]
                         head_cam = np.array(head_cam).astype(np.uint8)
-                        head_cam = np.moveaxis(head_cam, -1, -3)
                         f[f"head_cam_{agent_id}"].resize((f[f"head_cam_{agent_id}"].shape[0] + head_cam.shape[0]), axis=0)
                         f[f"head_cam_{agent_id}"][-head_cam.shape[0]:] = head_cam
                         agent_action = action[f'panda-{agent_id}'][:min_len]
@@ -159,7 +157,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_path", type=str, required=True, help="Path to the dataset")
     parser.add_argument("--output_path", type=str, required=True, help="Path to save the output")
     parser.add_argument("--agent_num", type=int, default=4, help="Number of agents (default: 4)")
-    parser.add_argument("--load_num", type=int, required=True, help="Number of trajectories to load")
+    parser.add_argument("--load_num", type=int, default=-1, help="Number of trajectories to load")
     args = parser.parse_args()
 
     main(args.dataset_path, args.output_path, args.load_num, args.agent_num)

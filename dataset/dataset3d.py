@@ -75,12 +75,12 @@ class Dataset3D(Dataset):
             data = {}
             for key, value in self.get_all_actions().items():
                 data[key] = value
-                data[key.replace("action", "agent_pos")] = value
+                data[key.replace("action", "state")] = value
         else:
             actions = self.get_all_actions()['action']
             data = {
                 'action': actions,
-                'agent_pos': actions,
+                'state': actions,
             }
         for key in self.input_meta["obs"].keys():
             if key.startswith("pointcloud"):
@@ -101,8 +101,8 @@ class Dataset3D(Dataset):
                     obs = self.data[key][buffer_start_idx:buffer_end_idx, :, :3]
                 else:
                     obs = self.data[key][buffer_start_idx:buffer_end_idx]
-            elif key.startswith("agent_pos"):
-                obs = self.data[key.replace("agent_pos", "action")][buffer_start_idx:buffer_end_idx]
+            elif key.startswith("state"):
+                obs = self.data[key.replace("state", "action")][buffer_start_idx:buffer_end_idx]
                 obs = np.array(obs).astype(np.float32)
             else:
                 obs = self.data[key][buffer_start_idx:buffer_end_idx]
@@ -121,16 +121,16 @@ class Dataset3D(Dataset):
 
         if not self.separate_action:
             agent_num = len(action_keys)
-            agent_pos_list = []
+            state_list = []
             action_list = []
             for i in range(agent_num):
-                key = f"agent_pos_{i}"
-                agent_pos_list.append(res['obs'][key])
+                key = f"state_{i}"
+                state_list.append(res['obs'][key])
                 del res['obs'][key]
                 key = f"action_{i}"
                 action_list.append(res[key])
                 del res[key]
-            res['obs']['agent_pos'] = np.concatenate(agent_pos_list, axis=-1)
+            res['obs']['state'] = np.concatenate(state_list, axis=-1)
             res['action'] = np.concatenate(action_list, axis=-1)
 
         return res
@@ -146,8 +146,8 @@ if __name__ == "__main__":
                         input_meta={
                             "obs": {
                                 "pointcloud": [512, 6],
-                                "agent_pos_0": [8],
-                                "agent_pos_1": [8],
+                                "state_0": [8],
+                                "state_1": [8],
                             },
                             "action_0": [8],
                             "action_1": [8],

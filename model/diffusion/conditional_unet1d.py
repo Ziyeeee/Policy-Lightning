@@ -7,7 +7,7 @@ from einops.layers.torch import Rearrange
 
 from model.diffusion.conv1d_components import (
     Downsample1d, Upsample1d, Conv1dBlock)
-from model.diffusion.positional_embedding import SinusoidalPosEmb
+from model.diffusion.positional_embedding import SinusoidalPosEmb, SinusoidalPosEmbFM
 
 logger = logging.getLogger(__name__)
 
@@ -75,19 +75,29 @@ class ConditionalUnet1D(nn.Module):
         down_dims=[256,512,1024],
         kernel_size=3,
         n_groups=8,
-        cond_predict_scale=False
+        cond_predict_scale=False,
+        norm_time=False
         ):
         super().__init__()
         all_dims = [input_dim] + list(down_dims)
         start_dim = down_dims[0]
 
-        dsed = diffusion_step_embed_dim
-        diffusion_step_encoder = nn.Sequential(
-            SinusoidalPosEmb(dsed),
-            nn.Linear(dsed, dsed * 4),
-            nn.Mish(),
-            nn.Linear(dsed * 4, dsed),
-        )
+        if norm_time:
+            dsed = diffusion_step_embed_dim // 8
+            diffusion_step_encoder = nn.Sequential(
+                SinusoidalPosEmbFM(dsed),
+                nn.Linear(dsed, dsed * 4),
+                nn.Mish(),
+                nn.Linear(dsed * 4, dsed),
+            )
+        else:
+            dsed = diffusion_step_embed_dim
+            diffusion_step_encoder = nn.Sequential(
+                SinusoidalPosEmb(dsed),
+                nn.Linear(dsed, dsed * 4),
+                nn.Mish(),
+                nn.Linear(dsed * 4, dsed),
+            )
         cond_dim = dsed
         if global_cond_dim is not None:
             cond_dim += global_cond_dim
@@ -172,7 +182,7 @@ class ConditionalUnet1D(nn.Module):
 
     def forward(self, 
             sample: torch.Tensor, 
-            timestep: Union[torch.Tensor, float, int], 
+            timesteps: Union[torch.Tensor, float, int], 
             local_cond=None, global_cond=None, **kwargs):
         """
         x: (B,T,input_dim)
@@ -183,8 +193,7 @@ class ConditionalUnet1D(nn.Module):
         """
         sample = einops.rearrange(sample, 'b h t -> b t h')
 
-        # 1. time
-        timesteps = timestep
+        # 1. time embedding
         if not torch.is_tensor(timesteps):
             # TODO: this requires sync between CPU and GPU. So try to pass timesteps as tensors if you can
             timesteps = torch.tensor([timesteps], dtype=torch.long, device=sample.device)

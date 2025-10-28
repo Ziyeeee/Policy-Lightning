@@ -33,13 +33,13 @@ We provide small-scale demo datasets for quick testing and validation. You can d
 **2D Diffusion Policy:**
 
 ```bash
-python workspace --config-name=dp2 task=2a_lift_barrier
+python workspace.py --config-name=dp2 task=2a_lift_barrier
 ```
 
 **3D Diffusion Policy:**
 
 ```bash
-python workspace --config-name=dp3 task=2a_lift_barrier_3d
+python workspace.py --config-name=dp3 task=2a_lift_barrier_3d
 ```
 
 **Custom Policy:**

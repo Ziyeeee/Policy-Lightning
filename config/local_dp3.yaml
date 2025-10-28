@@ -65,7 +65,7 @@ ema:
 
 dataloader:
   train:
-    batch_size: 32
+    batch_size: 64
     num_workers: 8
     shuffle: True
     pin_memory: True
@@ -92,17 +92,17 @@ checkpoint:
   save_top_k: 1
   save_last: True
   save_weights_only: False
-  every_n_epochs: 1
+  every_n_epochs: 10
   save_on_train_epoch_end: False
-  filename: 'epoch={epoch:0>3d}-loss={val/loss:.4f}.ckpt'
+  filename: 'epoch={epoch:0>3d}-loss={val/loss:.4f}'
   auto_insert_metric_name: False
 
 trainer:
-  max_epochs: 150
+  max_epochs: 300
   accelerator: auto
   devices: auto
   precision: 32
-  check_val_every_n_epoch: 2
+  check_val_every_n_epoch: 10
   enable_progress_bar: True
 
 logging:

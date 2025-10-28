@@ -4,6 +4,7 @@ from hydra.core.hydra_config import HydraConfig
 import torch
 from omegaconf import OmegaConf
 import pathlib
+from prefetch_generator import BackgroundGenerator
 from torch.utils.data import DataLoader, random_split
 from torch.optim.swa_utils import get_ema_avg_fn
 from lightning.pytorch import Trainer
@@ -15,6 +16,10 @@ from lightning.pytorch import LightningModule
 from model.common.callbacks import ModelAveragingCallback, SaveConfigCallback
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
+
+class DataLoaderX(DataLoader):
+    def __iter__(self):
+        return BackgroundGenerator(super().__iter__())
 
 
 @hydra.main(
@@ -31,8 +36,8 @@ def main(cfg: OmegaConf):
     model: LightningModule = hydra.utils.instantiate(cfg.policy)
     dataset = hydra.utils.instantiate(cfg.task.dataset)
     train_dataset, val_dataset = random_split(dataset, [int(len(dataset)*0.95), len(dataset) - int(len(dataset)*0.95)])
-    train_dataloader = DataLoader(train_dataset, **cfg.dataloader.train)
-    val_dataloader = DataLoader(val_dataset, **cfg.dataloader.val)
+    train_dataloader = DataLoaderX(train_dataset, **cfg.dataloader.train)
+    val_dataloader = DataLoaderX(val_dataset, **cfg.dataloader.val)
 
     model.set_normalizer(dataset.get_normalizer())
 

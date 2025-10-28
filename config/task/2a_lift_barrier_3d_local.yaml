@@ -10,7 +10,7 @@ shape_meta: &shape_meta
     pointcloud:
       shape: *point_shape
       type: point_cloud
-    agent_pos:
+    state:
       shape: *action_shape
       type: low_dim
   action:
@@ -26,8 +26,8 @@ dataset:
     obs:
       pointcloud_0: *point_shape
       pointcloud_1: *point_shape
-      agent_pos_0: *action_shape
-      agent_pos_1: *action_shape
+      state_0: *action_shape
+      state_1: *action_shape
     action_0: *action_shape
     action_1: *action_shape
   seperate_action: True
